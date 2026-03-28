@@ -1,106 +1,306 @@
 <!DOCTYPE html>
-<html>
-<body style="margin:0; overflow:hidden; background:#222;">
-<canvas id="gameCanvas"></canvas>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SRP - 3D Soft Body Car Simulator</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #container { width: 100vw; height: 100vh; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: white;
+            background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px;
+            pointer-events: none; border: 1px solid #444;
+        }
+        .stat { margin-bottom: 5px; font-size: 14px; }
+        .brand { color: #ff3e3e; font-weight: bold; font-size: 18px; margin-bottom: 10px; }
+        #controls {
+            position: absolute; bottom: 30px; width: 100%;
+            display: flex; justify-content: center; gap: 20px;
+        }
+        .btn {
+            background: rgba(255,255,255,0.2); color: white; border: 2px solid white;
+            padding: 15px 30px; border-radius: 50px; font-weight: bold;
+            touch-action: manipulation; user-select: none;
+        }
+        .btn:active { background: white; color: black; }
+    </style>
+</head>
+<body>
 
-<script>
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+<div id="ui">
+    <div class="brand">SRP BEAM-SIM v1.0</div>
+    <div class="stat">System: Node-Beam Physics</div>
+    <div class="stat">Status: <span id="status">Simulating</span></div>
+    <div class="stat">Stress: <span id="stress">0%</span></div>
+    <div class="stat">Speed: <span id="speed">0 km/h</span></div>
+</div>
 
-const gravity = 0.15;
-const friction = 0.99;
+<div id="controls">
+    <div class="btn" id="resetBtn">RESET</div>
+    <div class="btn" id="driveBtn">GAS</div>
+</div>
 
-class Node {
-    constructor(x, y) {
-        this.x = x;
-        this.y = y;
-        this.oldX = x;
-        this.oldY = y;
+<div id="container"></div>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
     }
-    update() {
-        let vx = (this.x - this.oldX) * friction;
-        let vy = (this.y - this.oldY) * friction;
-        this.oldX = this.x;
-        this.oldY = this.y;
-        this.x += vx;
-        this.y += vy + gravity;
+</script>
 
-        // Ground and Speed Breaker Collision
-        let ground = canvas.height - 50;
-        // Simple Speed Breaker Logic (A bump at x=400)
-        if (this.x > 350 && this.x < 450) {
-            ground -= 40; 
-        }
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-        if (this.y > ground) {
-            this.y = ground;
-            this.oldY = this.y + vy * 0.5; // Bounce
-        }
+/**
+ * SRP PHYSICS CORE - NODE & BEAM SYSTEM
+ * This simulates the internal structural integrity of the vehicle.
+ */
+class PhysicsNode {
+    constructor(x, y, z, mass = 1.0) {
+        this.position = new THREE.Vector3(x, y, z);
+        this.oldPosition = new THREE.Vector3(x, y, z);
+        this.velocity = new THREE.Vector3();
+        this.acceleration = new THREE.Vector3();
+        this.mass = mass;
+        this.isFixed = false;
+    }
+
+    update(dt) {
+        if (this.isFixed) return;
+        
+        // Verlet Integration
+        this.velocity.subVectors(this.position, this.oldPosition).multiplyScalar(0.98); // Air friction
+        this.oldPosition.copy(this.position);
+        
+        const step = this.velocity.clone().add(this.acceleration.multiplyScalar(dt * dt));
+        this.position.add(step);
+        this.acceleration.set(0, 0, 0); // Reset for next frame
     }
 }
 
-class Beam {
-    constructor(n1, n2, dist) {
-        this.n1 = n1;
-        this.n2 = n2;
-        this.dist = dist;
+class PhysicsBeam {
+    constructor(nodeA, nodeB, stiffness = 0.5, structural = true) {
+        this.nodeA = nodeA;
+        this.nodeB = nodeB;
+        this.restLength = nodeA.position.distanceTo(nodeB.position);
+        this.stiffness = stiffness;
+        this.broken = false;
+        this.isStructural = structural; // Structural beams resist permanent bending more
     }
-    update() {
-        let dx = this.n2.x - this.n1.x;
-        let dy = this.n2.y - this.n1.y;
-        let distance = Math.sqrt(dx * dx + dy * dy);
-        let diff = (this.dist - distance) / distance * 0.5;
-        let offsetX = dx * diff;
-        let offsetY = dy * diff;
 
-        this.n1.x -= offsetX;
-        this.n1.y -= offsetY;
-        this.n2.x += offsetX;
-        this.n2.y += offsetY;
+    solve() {
+        if (this.broken) return;
+
+        const delta = new THREE.Vector3().subVectors(this.nodeB.position, this.nodeA.position);
+        const currentLength = delta.length();
+        
+        // Permanent Deformation Logic (BeamNG Style)
+        const strain = (currentLength - this.restLength) / this.restLength;
+        if (Math.abs(strain) > 0.45) { // If stretched/compressed too much
+            this.restLength += (currentLength - this.restLength) * 0.1; // Plastic deformation
+        }
+
+        const force = (currentLength - this.restLength) / currentLength * this.stiffness;
+        const offset = delta.multiplyScalar(force);
+
+        if (!this.nodeA.isFixed) this.nodeA.position.add(offset);
+        if (!this.nodeB.isFixed) this.nodeB.position.sub(offset);
     }
 }
 
-// Create a "Soft" Box Car
-let nodes = [
-    new Node(100, 100), new Node(200, 100),
-    new Node(200, 150), new Node(100, 150)
-];
+/**
+ * ENGINE & SCENE SETUP
+ */
+let scene, camera, renderer, controls;
+let nodes = [], beams = [];
+let carGroup, carMesh, ground;
+let isDriving = false;
+const gravity = new THREE.Vector3(0, -9.81, 0);
 
-let beams = [
-    new Beam(nodes[0], nodes[1], 100), new Beam(nodes[1], nodes[2], 50),
-    new Beam(nodes[2], nodes[3], 100), new Beam(nodes[3], nodes[0], 50),
-    new Beam(nodes[0], nodes[2], 111), // Cross beam for structure
-    new Beam(nodes[1], nodes[3], 111)  // Cross beam
-];
+function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x222222);
+    scene.fog = new THREE.FogExp2(0x222222, 0.005);
 
-function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(10, 5, 15);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    document.getElementById('container').appendChild(renderer.domElement);
+
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambient);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(50, 100, 50);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    createEnvironment();
+    createCar(0, 2, 0);
     
-    // Draw Speed Breaker
-    ctx.fillStyle = "yellow";
-    ctx.fillRect(350, canvas.height - 90, 100, 40);
-
-    // Update & Draw Beams
-    ctx.strokeStyle = "white";
-    beams.forEach(b => {
-        b.update();
-        ctx.beginPath();
-        ctx.moveTo(b.n1.x, b.n1.y);
-        ctx.lineTo(b.n2.x, b.n2.y);
-        ctx.stroke();
-    });
-
-    // Update Nodes & Drive Forward
-    nodes.forEach(n => {
-        n.update();
-        n.x += 2; // Drive speed
-    });
-
-    requestAnimationFrame(draw);
+    animate();
 }
-draw();
+
+function createEnvironment() {
+    // Infinite Ground
+    const grid = new THREE.GridHelper(1000, 100, 0x444444, 0x222222);
+    scene.add(grid);
+
+    const geo = new THREE.PlaneGeometry(2000, 2000);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+    ground = new THREE.Mesh(geo, mat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Speed Breakers
+    for(let i = 1; i < 10; i++) {
+        const breakerGeo = new THREE.CylinderGeometry(0.5, 0.5, 20, 32, 1, false, 0, Math.PI);
+        const breakerMat = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+        const breaker = new THREE.Mesh(breakerGeo, breakerMat);
+        breaker.rotation.z = Math.PI / 2;
+        breaker.position.set(0, 0, -i * 25);
+        scene.add(breaker);
+    }
+}
+
+function createCar(x, y, z) {
+    nodes = [];
+    beams = [];
+    carGroup = new THREE.Group();
+    
+    // Create Chassis Nodes (8 points for a box)
+    const w = 1.2, h = 0.6, l = 2.5;
+    
+    // Bottom Nodes
+    nodes.push(new PhysicsNode(x-w, y, z-l)); // 0
+    nodes.push(new PhysicsNode(x+w, y, z-l)); // 1
+    nodes.push(new PhysicsNode(x+w, y, z+l)); // 2
+    nodes.push(new PhysicsNode(x-w, y, z+l)); // 3
+    
+    // Top Nodes
+    nodes.push(new PhysicsNode(x-w, y+h, z-l)); // 4
+    nodes.push(new PhysicsNode(x+w, y+h, z-l)); // 5
+    nodes.push(new PhysicsNode(x+w, y+h, z+l)); // 6
+    nodes.push(new PhysicsNode(x-w, y+h, z+l)); // 7
+
+    // Connect Beams (Structural)
+    const pairs = [
+        [0,1], [1,2], [2,3], [3,0], // Bottom square
+        [4,5], [5,6], [6,7], [7,4], // Top square
+        [0,4], [1,5], [2,6], [3,7], // Vertical supports
+        [0,5], [1,4], [1,6], [2,5], // Cross-bracing (important for soft-body)
+        [2,7], [3,6], [3,4], [0,7],
+        [0,2], [1,3], [4,6], [5,7]  // Floor/Roof bracing
+    ];
+
+    pairs.forEach(p => {
+        beams.push(new PhysicsBeam(nodes[p[0]], nodes[p[1]], 0.4));
+    });
+
+    // Visualization Mesh
+    const carGeo = new THREE.BoxGeometry(w*2, h, l*2);
+    const carMat = new THREE.MeshStandardMaterial({ color: 0xdd0000, wireframe: false });
+    carMesh = new THREE.Mesh(carGeo, carMat);
+    carMesh.castShadow = true;
+    scene.add(carMesh);
+}
+
+function updatePhysics() {
+    const dt = 0.016; // Fixed timestep
+
+    // Apply Drive Force
+    if (isDriving) {
+        nodes.forEach(n => {
+            n.acceleration.z -= 15.0; // Drive forward
+        });
+    }
+
+    // Apply Gravity
+    nodes.forEach(n => n.acceleration.add(gravity));
+
+    // Solve Beams Multiple Times for Stability
+    for (let i = 0; i < 5; i++) {
+        beams.forEach(b => b.solve());
+    }
+
+    // Update Nodes & Floor Collision
+    nodes.forEach(n => {
+        n.update(dt);
+        
+        // Dynamic Ground Detection
+        let groundLevel = 0;
+        // Speed breaker collision detection
+        const zPos = n.position.z;
+        const breakerIndex = Math.round(zPos / -25);
+        const distToBreaker = Math.abs(zPos - (breakerIndex * -25));
+        
+        if (breakerIndex > 0 && breakerIndex < 10 && distToBreaker < 0.5) {
+            groundLevel = Math.sqrt(Math.pow(0.5, 2) - Math.pow(distToBreaker, 2));
+        }
+
+        if (n.position.y < groundLevel) {
+            n.position.y = groundLevel;
+            // Friction on contact
+            n.oldPosition.x += (n.position.x - n.oldPosition.x) * 0.1;
+        }
+    });
+
+    // Sync Mesh with Soft-Body Skeleton
+    // We average the node positions to move the mesh
+    const center = new THREE.Vector3();
+    nodes.forEach(n => center.add(n.position));
+    center.divideScalar(nodes.length);
+    carMesh.position.copy(center);
+
+    // Simple Rotation Alignment
+    const front = new THREE.Vector3().subVectors(nodes[0].position, nodes[3].position).normalize();
+    const up = new THREE.Vector3().subVectors(nodes[4].position, nodes[0].position).normalize();
+    const right = new THREE.Vector3().crossVectors(up, front).normalize();
+    
+    const matrix = new THREE.Matrix4();
+    matrix.makeBasis(right, up, front);
+    carMesh.rotation.setFromRotationMatrix(matrix);
+
+    // Update UI Stats
+    const vel = nodes[0].position.distanceTo(nodes[0].oldPosition) * 60;
+    document.getElementById('speed').innerText = Math.floor(vel * 3.6) + " km/h";
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    updatePhysics();
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+// Controls
+document.getElementById('driveBtn').addEventListener('touchstart', () => isDriving = true);
+document.getElementById('driveBtn').addEventListener('touchend', () => isDriving = false);
+document.getElementById('resetBtn').addEventListener('click', () => {
+    location.reload();
+});
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+init();
 </script>
 </body>
 </html>
