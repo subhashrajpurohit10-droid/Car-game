@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<body style="margin:0; overflow:hidden; background:#222;">
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const gravity = 0.15;
+const friction = 0.99;
+
+class Node {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.oldX = x;
+        this.oldY = y;
+    }
+    update() {
+        let vx = (this.x - this.oldX) * friction;
+        let vy = (this.y - this.oldY) * friction;
+        this.oldX = this.x;
+        this.oldY = this.y;
+        this.x += vx;
+        this.y += vy + gravity;
+
+        // Ground and Speed Breaker Collision
+        let ground = canvas.height - 50;
+        // Simple Speed Breaker Logic (A bump at x=400)
+        if (this.x > 350 && this.x < 450) {
+            ground -= 40; 
+        }
+
+        if (this.y > ground) {
+            this.y = ground;
+            this.oldY = this.y + vy * 0.5; // Bounce
+        }
+    }
+}
+
+class Beam {
+    constructor(n1, n2, dist) {
+        this.n1 = n1;
+        this.n2 = n2;
+        this.dist = dist;
+    }
+    update() {
+        let dx = this.n2.x - this.n1.x;
+        let dy = this.n2.y - this.n1.y;
+        let distance = Math.sqrt(dx * dx + dy * dy);
+        let diff = (this.dist - distance) / distance * 0.5;
+        let offsetX = dx * diff;
+        let offsetY = dy * diff;
+
+        this.n1.x -= offsetX;
+        this.n1.y -= offsetY;
+        this.n2.x += offsetX;
+        this.n2.y += offsetY;
+    }
+}
+
+// Create a "Soft" Box Car
+let nodes = [
+    new Node(100, 100), new Node(200, 100),
+    new Node(200, 150), new Node(100, 150)
+];
+
+let beams = [
+    new Beam(nodes[0], nodes[1], 100), new Beam(nodes[1], nodes[2], 50),
+    new Beam(nodes[2], nodes[3], 100), new Beam(nodes[3], nodes[0], 50),
+    new Beam(nodes[0], nodes[2], 111), // Cross beam for structure
+    new Beam(nodes[1], nodes[3], 111)  // Cross beam
+];
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw Speed Breaker
+    ctx.fillStyle = "yellow";
+    ctx.fillRect(350, canvas.height - 90, 100, 40);
+
+    // Update & Draw Beams
+    ctx.strokeStyle = "white";
+    beams.forEach(b => {
+        b.update();
+        ctx.beginPath();
+        ctx.moveTo(b.n1.x, b.n1.y);
+        ctx.lineTo(b.n2.x, b.n2.y);
+        ctx.stroke();
+    });
+
+    // Update Nodes & Drive Forward
+    nodes.forEach(n => {
+        n.update();
+        n.x += 2; // Drive speed
+    });
+
+    requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>
